@@ -18,16 +18,22 @@ import {
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
+import api from '@/services/api'
 import StatusDot from '@/components/StatusDot.vue'
 import {
   ArrowLeft, RefreshCw, FileText, MoreVertical, Scale, Trash2, RotateCw,
-  ArrowUpCircle, Cpu, MemoryStick, HardDrive, Globe, Container,
+  ArrowUpCircle, Cpu, MemoryStick, HardDrive, Globe, Container, Copy,
 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
+import { useNotify } from '@/components/ui/notify'
 
 const route = useRoute()
 const router = useRouter()
 const instanceStore = useInstanceStore()
+const notify = useNotify()
 
 const detail = ref<IDetail | null>(null)
 const loading = ref(true)
@@ -72,6 +78,23 @@ onMounted(async () => {
     loading.value = false
   }
 })
+
+// ── 镜像版本列表 ──
+const imageTags = ref<string[]>([])
+const loadingTags = ref(false)
+
+async function fetchImageTags() {
+  loadingTags.value = true
+  try {
+    const res = await api.get('/registry/tags')
+    const tags = res.data.data as { tag: string }[]
+    imageTags.value = tags.map((t) => t.tag)
+  } catch {
+    imageTags.value = []
+  } finally {
+    loadingTags.value = false
+  }
+}
 
 function podStatusToDot(phase: string) {
   if (phase === 'Running') return 'running' as const
@@ -174,6 +197,45 @@ async function viewLogs(podName: string) {
   }
 }
 
+// Gateway Token
+const gatewayToken = computed(() => detail.value?.env_vars?.OPENCLAW_GATEWAY_TOKEN || '')
+const consoleUrl = computed(() => {
+  if (!detail.value?.ingress_domain || !gatewayToken.value) return ''
+  return `https://${detail.value.ingress_domain}/?token=${gatewayToken.value}`
+})
+const syncingToken = ref(false)
+
+async function handleSyncToken() {
+  syncingToken.value = true
+  try {
+    await instanceStore.syncToken(instanceId)
+    detail.value = await instanceStore.fetchDetail(instanceId)
+    toast.success('Token 获取成功')
+  } catch {
+    toast.error('获取 Token 失败，请确保实例 Pod 正在运行')
+  } finally {
+    syncingToken.value = false
+  }
+}
+
+async function copyEnvVar(key: string, val: string) {
+  const text = `${key}=${val}`
+  try {
+    await navigator.clipboard.writeText(text)
+    notify.success(`已复制 ${key}`)
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+    notify.success(`已复制 ${key}`)
+  }
+}
+
 const canDelete = computed(() => deleteConfirmName.value === detail.value?.name)
 
 function formatTime(ts: string | null): string {
@@ -196,7 +258,7 @@ function formatTime(ts: string | null): string {
         </Badge>
       </div>
       <div v-if="detail" class="flex items-center gap-2">
-        <Button variant="outline" size="sm" @click="showUpdateDialog = true">
+        <Button variant="outline" size="sm" @click="showUpdateDialog = true; fetchImageTags()">
           <ArrowUpCircle class="w-4 h-4 mr-1" />
           滚动更新
         </Button>
@@ -261,8 +323,37 @@ function formatTime(ts: string | null): string {
                     : 'unknown'
                   " />
                 </div>
-                <div class="flex justify-between"><span class="text-muted-foreground">服务类型</span><span>{{ detail.service_type }}</span></div>
-                <div class="flex justify-between"><span class="text-muted-foreground">域名</span><span>{{ detail.ingress_domain || '-' }}</span></div>
+                <div class="flex justify-between">
+                  <span class="text-muted-foreground">访问地址</span>
+                  <a
+                    v-if="detail.ingress_domain"
+                    :href="`https://${detail.ingress_domain}`"
+                    target="_blank"
+                    class="text-primary hover:underline font-mono text-xs"
+                  >{{ detail.ingress_domain }}</a>
+                  <span v-else class="text-muted-foreground">-</span>
+                </div>
+                <div class="flex justify-between items-center">
+                  <span class="text-muted-foreground">OpenClaw 控制台</span>
+                  <a
+                    v-if="consoleUrl"
+                    :href="consoleUrl"
+                    target="_blank"
+                    class="text-primary hover:underline font-mono text-xs truncate max-w-[220px]"
+                  >打开控制台</a>
+                  <Button
+                    v-else-if="detail.ingress_domain"
+                    variant="ghost"
+                    size="sm"
+                    class="h-6 text-xs px-2"
+                    :disabled="syncingToken"
+                    @click="handleSyncToken"
+                  >
+                    <RefreshCw v-if="syncingToken" class="w-3 h-3 mr-1 animate-spin" />
+                    {{ syncingToken ? '获取中...' : '获取 Token' }}
+                  </Button>
+                  <span v-else class="text-muted-foreground">-</span>
+                </div>
               </CardContent>
             </Card>
             <Card>
@@ -272,6 +363,8 @@ function formatTime(ts: string | null): string {
                 <div class="flex justify-between"><span class="text-muted-foreground">CPU Limit</span><span>{{ detail.cpu_limit }}</span></div>
                 <div class="flex justify-between"><span class="text-muted-foreground">内存 Request</span><span>{{ detail.mem_request }}</span></div>
                 <div class="flex justify-between"><span class="text-muted-foreground">内存 Limit</span><span>{{ detail.mem_limit }}</span></div>
+                <div class="flex justify-between"><span class="text-muted-foreground">存储类型</span><span class="font-mono">{{ detail.storage_class || '-' }}</span></div>
+                <div class="flex justify-between"><span class="text-muted-foreground">存储大小</span><span class="font-mono">{{ detail.storage_size }}</span></div>
               </CardContent>
             </Card>
             <Card>
@@ -286,11 +379,13 @@ function formatTime(ts: string | null): string {
                   <div
                     v-for="(val, key) in detail.env_vars"
                     :key="key"
-                    class="flex gap-2 text-xs font-mono"
+                    class="group flex items-center gap-2 text-xs font-mono min-w-0 rounded px-1 -mx-1 hover:bg-muted/50 cursor-pointer"
+                    @click="copyEnvVar(String(key), String(val))"
                   >
-                    <span class="text-muted-foreground">{{ key }}</span>
-                    <span>=</span>
-                    <span>{{ val }}</span>
+                    <span class="text-muted-foreground shrink-0">{{ key }}</span>
+                    <span class="shrink-0">=</span>
+                    <span class="truncate" :title="String(val)">{{ val }}</span>
+                    <Copy class="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 shrink-0 transition-opacity" />
                   </div>
                 </div>
               </CardContent>
@@ -371,7 +466,7 @@ function formatTime(ts: string | null): string {
               <CardHeader>
                 <div class="flex items-center justify-between">
                   <CardTitle>当前配置</CardTitle>
-                  <Button variant="outline" size="sm" @click="showUpdateDialog = true">
+                  <Button variant="outline" size="sm" @click="showUpdateDialog = true; fetchImageTags()">
                     <ArrowUpCircle class="w-4 h-4 mr-1" /> 修改配置
                   </Button>
                 </div>
@@ -542,9 +637,14 @@ function formatTime(ts: string | null): string {
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>删除实例</AlertDialogTitle>
-          <AlertDialogDescription>
-            此操作不可撤销。将删除实例 <strong>{{ detail?.name }}</strong> 及其 K8s 资源（PVC 保留）。
-            请输入实例名称以确认。
+          <AlertDialogDescription class="space-y-2">
+            <p>此操作<strong class="text-destructive">不可撤销</strong>。将删除实例 <strong>{{ detail?.name }}</strong> 对应的整个命名空间 <code class="text-xs bg-muted px-1 py-0.5 rounded">{{ detail?.namespace }}</code> 及其下所有 K8s 资源，包括：</p>
+            <ul class="text-xs list-disc list-inside text-muted-foreground">
+              <li>Deployment、Service、Ingress（实例将完全不可访问）</li>
+              <li>PVC 持久化存储（聊天记录、配置等数据将永久丢失）</li>
+              <li>ConfigMap、Secret 等配置资源</li>
+            </ul>
+            <p>请输入实例名称 <strong>{{ detail?.name }}</strong> 以确认删除。</p>
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div class="py-2">
@@ -568,8 +668,29 @@ function formatTime(ts: string | null): string {
         </DialogHeader>
         <div class="space-y-4 py-4">
           <div>
-            <Label>镜像版本</Label>
-            <Input v-model="updateForm.image_version" class="mt-1" />
+            <div class="flex items-center gap-1.5">
+              <Label>镜像版本</Label>
+              <button
+                class="inline-flex items-center justify-center w-5 h-5 rounded hover:bg-muted transition-colors"
+                :class="{ 'animate-spin': loadingTags }"
+                :disabled="loadingTags"
+                title="刷新镜像版本列表"
+                @click="fetchImageTags()"
+              >
+                <RefreshCw class="w-3.5 h-3.5 text-muted-foreground" />
+              </button>
+            </div>
+            <Select v-if="imageTags.length > 0" v-model="updateForm.image_version" class="mt-1">
+              <SelectTrigger class="w-full font-mono text-sm mt-1">
+                <SelectValue placeholder="选择镜像版本" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem v-for="tag in imageTags" :key="tag" :value="tag">
+                  {{ tag }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <Input v-else v-model="updateForm.image_version" class="mt-1" :placeholder="loadingTags ? '加载中...' : '手动输入版本号'" />
           </div>
           <div class="grid grid-cols-2 gap-4">
             <div>

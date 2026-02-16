@@ -26,14 +26,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("", response_model=ApiResponse[list[InstanceInfo]])
-async def list_instances(
-    cluster_id: str | None = Query(None),
+@router.get("/check-name", response_model=ApiResponse[dict])
+async def check_name(
+    name: str = Query(..., min_length=1),
+    cluster_id: str = Query(...),
     db: AsyncSession = Depends(get_db),
     _current_user: User = Depends(get_current_user),
 ):
-    """实例列表。"""
-    data = await instance_service.list_instances(db, cluster_id)
+    """检查实例名称是否与现有实例冲突。"""
+    data = await instance_service.check_name_conflict(name, cluster_id, db)
+    return ApiResponse(data=data)
+
+
+@router.get("", response_model=ApiResponse[list[InstanceInfo]])
+async def list_instances(
+    cluster_id: str | None = Query(None),
+    org_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """实例列表（按组织过滤，非超管只能看自己组织的）。"""
+    # 非超管强制按当前组织过滤
+    effective_org_id = org_id
+    if not current_user.is_super_admin:
+        effective_org_id = current_user.current_org_id
+    data = await instance_service.list_instances(db, cluster_id, org_id=effective_org_id)
     return ApiResponse(data=data)
 
 
@@ -139,6 +156,17 @@ async def rollback_instance(
     return ApiResponse(data=data)
 
 
+@router.post("/{instance_id}/sync-token", response_model=ApiResponse[dict])
+async def sync_token(
+    instance_id: str,
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+):
+    """从运行中的 Pod 获取 Gateway Token 并回填到 DB。"""
+    token = await instance_service.sync_gateway_token(instance_id, db)
+    return ApiResponse(data={"token": token})
+
+
 @router.get("/{instance_id}/pods/{pod_name}/logs", response_model=ApiResponse[str])
 async def pod_logs(
     instance_id: str,
@@ -166,7 +194,9 @@ async def pod_logs_stream(
 ):
     """SSE 流: 实时 Pod 日志，支持时间范围筛选。"""
     instance = await instance_service.get_instance(instance_id, db)
-    result = await db.execute(select(Cluster).where(Cluster.id == instance.cluster_id))
+    result = await db.execute(
+        select(Cluster).where(Cluster.id == instance.cluster_id, Cluster.deleted_at.is_(None))
+    )
     cluster = result.scalar_one_or_none()
     if not cluster:
         raise NotFoundError("集群不存在")

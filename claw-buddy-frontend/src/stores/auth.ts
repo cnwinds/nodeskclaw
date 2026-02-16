@@ -9,6 +9,8 @@ export interface UserInfo {
   email: string | null
   avatar_url: string | null
   role: string
+  is_super_admin: boolean
+  current_org_id: string | null
   last_login_at: string | null
 }
 
@@ -35,7 +37,8 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function feishuLogin(code: string) {
-    const res = await api.post('/auth/feishu/callback', { code })
+    const redirect_uri = window.location.origin + '/login'
+    const res = await api.post('/auth/feishu/callback', { code, redirect_uri })
     const data = res.data.data
     setTokens(data.access_token, data.refresh_token)
     user.value = data.user

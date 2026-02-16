@@ -2,9 +2,10 @@
 
 import json
 import logging
+import re as _re
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError
@@ -20,16 +21,62 @@ from app.services.k8s.resource_builder import build_configmap, build_labels
 logger = logging.getLogger(__name__)
 
 
-async def list_instances(db: AsyncSession, cluster_id: str | None = None) -> list[InstanceInfo]:
-    query = select(Instance).order_by(Instance.created_at.desc())
+def _sanitize_name(name: str) -> str:
+    """将实例名称清洗为 RFC 1123 格式（与 deploy_service 逻辑保持一致）。"""
+    safe = _re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")
+    return _re.sub(r"-{2,}", "-", safe)
+
+
+async def check_name_conflict(
+    name: str, cluster_id: str, db: AsyncSession
+) -> dict:
+    """
+    检查实例名称是否与现有实例冲突。
+    同时检查原始名称和清洗后的 namespace 是否冲突。
+    """
+    safe_name = _sanitize_name(name)
+    namespace = f"clawbuddy-{safe_name}"
+
+    # 查找同集群中未删除的实例，名称或 namespace 冲突
+    result = await db.execute(
+        select(Instance).where(
+            Instance.cluster_id == cluster_id,
+            Instance.deleted_at.is_(None),
+        )
+    )
+    instances = result.scalars().all()
+
+    for inst in instances:
+        if inst.name == name:
+            return {"conflict": True, "reason": f"实例名称 \"{name}\" 已存在"}
+        inst_safe = _sanitize_name(inst.name)
+        if inst_safe == safe_name:
+            return {
+                "conflict": True,
+                "reason": f"名称清洗后与已有实例 \"{inst.name}\" 的命名空间冲突（均为 {namespace}）",
+            }
+
+    return {"conflict": False, "reason": ""}
+
+
+async def list_instances(
+    db: AsyncSession,
+    cluster_id: str | None = None,
+    org_id: str | None = None,
+) -> list[InstanceInfo]:
+    query = select(Instance).where(Instance.deleted_at.is_(None)).order_by(Instance.created_at.desc())
     if cluster_id:
         query = query.where(Instance.cluster_id == cluster_id)
+    if org_id:
+        query = query.where(Instance.org_id == org_id)
     result = await db.execute(query)
     return [InstanceInfo.model_validate(i) for i in result.scalars().all()]
 
 
 async def get_instance(instance_id: str, db: AsyncSession) -> Instance:
-    result = await db.execute(select(Instance).where(Instance.id == instance_id))
+    result = await db.execute(
+        select(Instance).where(Instance.id == instance_id, Instance.deleted_at.is_(None))
+    )
     instance = result.scalar_one_or_none()
     if not instance:
         raise NotFoundError("实例不存在")
@@ -41,7 +88,9 @@ async def get_instance_detail(instance_id: str, db: AsyncSession) -> InstanceDet
     instance = await get_instance(instance_id, db)
 
     # Get cluster for k8s connection
-    cluster_result = await db.execute(select(Cluster).where(Cluster.id == instance.cluster_id))
+    cluster_result = await db.execute(
+        select(Cluster).where(Cluster.id == instance.cluster_id, Cluster.deleted_at.is_(None))
+    )
     cluster = cluster_result.scalar_one_or_none()
 
     detail = InstanceDetail(
@@ -86,36 +135,44 @@ async def get_instance_detail(instance_id: str, db: AsyncSession) -> InstanceDet
 
 
 async def delete_instance(instance_id: str, db: AsyncSession, delete_k8s: bool = True):
-    """Delete instance from DB and optionally from K8s."""
+    """逻辑删除实例：标记 deleted_at，从 K8s 删除整个命名空间（级联删除所有资源）。"""
     instance = await get_instance(instance_id, db)
 
     if delete_k8s:
-        cluster_result = await db.execute(select(Cluster).where(Cluster.id == instance.cluster_id))
+        cluster_result = await db.execute(
+            select(Cluster).where(Cluster.id == instance.cluster_id, Cluster.deleted_at.is_(None))
+        )
         cluster = cluster_result.scalar_one_or_none()
         if cluster and cluster.kubeconfig_encrypted:
             try:
                 api_client = await k8s_manager.get_or_create(cluster.id, cluster.kubeconfig_encrypted)
                 k8s = K8sClient(api_client)
-                # Delete deployment and service
+                # 删除整个命名空间（级联删除 Deployment、Service、Ingress、PVC、ConfigMap 等所有资源）
                 try:
-                    await k8s.apps.delete_namespaced_deployment(instance.name, instance.namespace)
+                    await k8s.core.delete_namespace(instance.namespace)
+                    logger.info("已删除命名空间 %s（实例 %s）", instance.namespace, instance.name)
                 except Exception:
-                    pass
-                try:
-                    await k8s.core.delete_namespaced_service(instance.name, instance.namespace)
-                except Exception:
-                    pass
-                # PVC is NOT deleted by default (user data protection)
+                    # 命名空间可能已不存在，忽略
+                    logger.warning("删除命名空间 %s 失败，可能已不存在", instance.namespace)
             except Exception as e:
-                logger.warning("Failed to delete K8s resources for %s: %s", instance.name, e)
+                logger.warning("删除实例 %s 的 K8s 资源失败: %s", instance.name, e)
 
-    await db.delete(instance)
+    # 逻辑删除实例
+    instance.soft_delete()
+    # 级联逻辑删除关联的部署记录
+    await db.execute(
+        update(DeployRecord)
+        .where(DeployRecord.instance_id == instance.id, DeployRecord.deleted_at.is_(None))
+        .values(deleted_at=func.now())
+    )
     await db.commit()
 
 
 async def scale_instance(instance_id: str, replicas: int, db: AsyncSession):
     instance = await get_instance(instance_id, db)
-    cluster_result = await db.execute(select(Cluster).where(Cluster.id == instance.cluster_id))
+    cluster_result = await db.execute(
+        select(Cluster).where(Cluster.id == instance.cluster_id, Cluster.deleted_at.is_(None))
+    )
     cluster = cluster_result.scalar_one_or_none()
     if not cluster:
         raise NotFoundError("集群不存在")
@@ -130,7 +187,9 @@ async def scale_instance(instance_id: str, replicas: int, db: AsyncSession):
 
 async def restart_instance(instance_id: str, db: AsyncSession):
     instance = await get_instance(instance_id, db)
-    cluster_result = await db.execute(select(Cluster).where(Cluster.id == instance.cluster_id))
+    cluster_result = await db.execute(
+        select(Cluster).where(Cluster.id == instance.cluster_id, Cluster.deleted_at.is_(None))
+    )
     cluster = cluster_result.scalar_one_or_none()
     if not cluster:
         raise NotFoundError("集群不存在")
@@ -143,7 +202,7 @@ async def restart_instance(instance_id: str, db: AsyncSession):
 async def get_deploy_history(instance_id: str, db: AsyncSession) -> list[DeployRecordInfo]:
     result = await db.execute(
         select(DeployRecord)
-        .where(DeployRecord.instance_id == instance_id)
+        .where(DeployRecord.instance_id == instance_id, DeployRecord.deleted_at.is_(None))
         .order_by(DeployRecord.created_at.desc())
     )
     return [DeployRecordInfo.model_validate(r) for r in result.scalars().all()]
@@ -153,7 +212,9 @@ async def get_pod_logs(
     instance_id: str, pod_name: str, db: AsyncSession, container: str | None = None, tail_lines: int = 200
 ) -> str:
     instance = await get_instance(instance_id, db)
-    cluster_result = await db.execute(select(Cluster).where(Cluster.id == instance.cluster_id))
+    cluster_result = await db.execute(
+        select(Cluster).where(Cluster.id == instance.cluster_id, Cluster.deleted_at.is_(None))
+    )
     cluster = cluster_result.scalar_one_or_none()
     if not cluster:
         raise NotFoundError("集群不存在")
@@ -232,7 +293,9 @@ async def _execute_config_update(
     instance: Instance, req: UpdateConfigRequest, user_id: str, db: AsyncSession
 ) -> InstanceInfo:
     """内部方法: 真正执行配置变更 + K8s 滚动更新。"""
-    cluster_result = await db.execute(select(Cluster).where(Cluster.id == instance.cluster_id))
+    cluster_result = await db.execute(
+        select(Cluster).where(Cluster.id == instance.cluster_id, Cluster.deleted_at.is_(None))
+    )
     cluster = cluster_result.scalar_one_or_none()
     if not cluster:
         raise NotFoundError("集群不存在")
@@ -284,7 +347,7 @@ async def _execute_config_update(
     # 创建部署记录
     max_rev = await db.execute(
         select(func.coalesce(func.max(DeployRecord.revision), 0)).where(
-            DeployRecord.instance_id == instance.id
+            DeployRecord.instance_id == instance.id, DeployRecord.deleted_at.is_(None)
         )
     )
     next_rev = max_rev.scalar() + 1
@@ -367,6 +430,78 @@ async def _execute_config_update(
     return InstanceInfo.model_validate(instance)
 
 
+async def sync_gateway_token(instance_id: str, db: AsyncSession) -> str:
+    """从运行中的 Pod 读取 OPENCLAW_GATEWAY_TOKEN 并回填到 DB 和 ConfigMap。"""
+    instance = await get_instance(instance_id, db)
+
+    # 如果 DB 中已有 Token，直接返回
+    env_vars = json.loads(instance.env_vars) if instance.env_vars else {}
+    if env_vars.get("OPENCLAW_GATEWAY_TOKEN"):
+        return env_vars["OPENCLAW_GATEWAY_TOKEN"]
+
+    # 获取集群连接
+    cluster_result = await db.execute(
+        select(Cluster).where(Cluster.id == instance.cluster_id, Cluster.deleted_at.is_(None))
+    )
+    cluster = cluster_result.scalar_one_or_none()
+    if not cluster:
+        raise NotFoundError("集群不存在")
+
+    api_client = await k8s_manager.get_or_create(cluster.id, cluster.kubeconfig_encrypted)
+    k8s = K8sClient(api_client)
+
+    # 找一个 Running 的 Pod
+    label_selector = f"app.kubernetes.io/name={instance.name}"
+    pods = await k8s.list_pods(instance.namespace, label_selector)
+    logger.info("sync_gateway_token: found %d pods (label=%s)", len(pods), label_selector)
+    running_pods = [p for p in pods if p["phase"] == "Running"]
+    if not running_pods:
+        phases = [p["phase"] for p in pods]
+        raise NotFoundError(f"没有运行中的 Pod，无法获取 Token（当前状态: {phases}）")
+
+    pod_name = running_pods[0]["name"]
+    logger.info("sync_gateway_token: reading logs from pod %s", pod_name)
+
+    # 从 Pod 启动日志中解析 Token（entrypoint 会打印 "[entrypoint] Token: xxx"）
+    # 使用 limit_bytes 从头部读取（Token 在容器启动时输出，tail_lines 取不到）
+    try:
+        logs = await k8s.core.read_namespaced_pod_log(
+            pod_name, instance.namespace, limit_bytes=65536,
+        )
+    except Exception as e:
+        logger.exception("sync_gateway_token: get_pod_logs failed")
+        raise NotFoundError(f"读取 Pod 日志失败: {e}")
+
+    match = _re.search(r"\[entrypoint\] Token: (\S+)", logs)
+    if not match:
+        raise NotFoundError(
+            "Pod 日志中未找到 Gateway Token（容器可能使用了用户指定的 Token 而未打印）"
+        )
+    token = match.group(1)
+
+    # 回填到 DB
+    env_vars["OPENCLAW_GATEWAY_TOKEN"] = token
+    instance.env_vars = json.dumps(env_vars)
+
+    # 回填到 ConfigMap
+    try:
+        labels = build_labels(instance.name, instance.id, instance.image_version)
+        cm = build_configmap(f"{instance.name}-config", instance.namespace, env_vars, labels)
+        try:
+            await k8s.core.replace_namespaced_config_map(
+                f"{instance.name}-config", instance.namespace, cm
+            )
+        except Exception:
+            await k8s.create_or_skip(
+                k8s.core.create_namespaced_config_map, instance.namespace, cm
+            )
+    except Exception as e:
+        logger.warning("回填 ConfigMap 失败: %s", e)
+
+    await db.commit()
+    return token
+
+
 async def rollback_instance(
     instance_id: str, target_revision: int, user_id: str, db: AsyncSession
 ) -> InstanceInfo:
@@ -378,6 +513,7 @@ async def rollback_instance(
         select(DeployRecord).where(
             DeployRecord.instance_id == instance_id,
             DeployRecord.revision == target_revision,
+            DeployRecord.deleted_at.is_(None),
         )
     )
     target_record = result.scalar_one_or_none()

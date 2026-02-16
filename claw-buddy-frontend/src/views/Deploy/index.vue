@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useClusterStore } from '@/stores/cluster'
@@ -14,7 +14,7 @@ import {
 import AdvancedConfigPanel from '@/components/AdvancedConfigPanel.vue'
 import {
   Rocket, CheckCircle, XCircle, AlertTriangle, Loader2,
-  ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
+  ChevronLeft, ChevronRight, ChevronDown, ChevronUp, RefreshCw, CircleAlert,
 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import api from '@/services/api'
@@ -38,10 +38,10 @@ const form = ref({
   name: '',
   image_version: '',
   replicas: 1,
-  cpu_request: '500m',
-  cpu_limit: '2000m',
-  mem_request: '512Mi',
-  mem_limit: '4Gi',
+  cpu_request: '2000m',
+  cpu_limit: '4000m',
+  mem_request: '4Gi',
+  mem_limit: '8Gi',
   storage_class: 'nas-subpath',
   storage_size: '80Gi',
   quota_cpu: '4',
@@ -64,6 +64,38 @@ function generateDefaultName() {
   form.value.name = `${prefix}-${count}`
 }
 
+// ── 名称冲突检测（防抖）──
+const nameConflict = ref<{ conflict: boolean; reason: string }>({ conflict: false, reason: '' })
+const checkingName = ref(false)
+let nameCheckTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(
+  () => form.value.name,
+  (name) => {
+    // 清除上一次定时器
+    if (nameCheckTimer) clearTimeout(nameCheckTimer)
+    // 空名称直接重置
+    if (!name || !selectedCluster.value) {
+      nameConflict.value = { conflict: false, reason: '' }
+      return
+    }
+    // 防抖 400ms
+    nameCheckTimer = setTimeout(async () => {
+      checkingName.value = true
+      try {
+        const res = await api.get('/instances/check-name', {
+          params: { name, cluster_id: selectedCluster.value!.id },
+        })
+        nameConflict.value = res.data.data
+      } catch {
+        nameConflict.value = { conflict: false, reason: '' }
+      } finally {
+        checkingName.value = false
+      }
+    }, 400)
+  },
+)
+
 // ── Quota presets ──
 const quotaPreset = ref<string>('medium')
 const quotaPresets = [
@@ -74,9 +106,9 @@ const quotaPresets = [
 
 // 预设档位对应的容器资源配置
 const presetResources: Record<string, { cpu_request: string; cpu_limit: string; mem_request: string; mem_limit: string; storage_size: string }> = {
-  small:  { cpu_request: '250m',  cpu_limit: '1000m', mem_request: '256Mi', mem_limit: '1Gi',  storage_size: '40Gi' },
-  medium: { cpu_request: '500m',  cpu_limit: '2000m', mem_request: '512Mi', mem_limit: '4Gi',  storage_size: '80Gi' },
-  large:  { cpu_request: '1000m', cpu_limit: '4000m', mem_request: '1Gi',   mem_limit: '8Gi',  storage_size: '160Gi' },
+  small:  { cpu_request: '1000m', cpu_limit: '2000m',  mem_request: '2Gi',  mem_limit: '4Gi',   storage_size: '40Gi' },
+  medium: { cpu_request: '2000m', cpu_limit: '4000m',  mem_request: '4Gi',  mem_limit: '8Gi',   storage_size: '80Gi' },
+  large:  { cpu_request: '4000m', cpu_limit: '8000m',  mem_request: '8Gi',  mem_limit: '16Gi',  storage_size: '160Gi' },
 }
 
 function selectQuotaPreset(key: string) {
@@ -101,12 +133,16 @@ function selectQuotaPreset(key: string) {
 const imageTags = ref<string[]>([])
 const loadingTags = ref(false)
 
-async function fetchImageTags() {
+async function fetchImageTags(autoSelect = false) {
   loadingTags.value = true
   try {
     const res = await api.get('/registry/tags')
     const tags = res.data.data as { tag: string }[]
     imageTags.value = tags.map((t) => t.tag)
+    // 自动选中最新 tag（第一个，后端已按倒序排好）
+    if (autoSelect && imageTags.value.length > 0) {
+      form.value.image_version = imageTags.value[0] ?? ''
+    }
   } catch {
     // Registry not configured or unreachable -- allow manual input
     imageTags.value = []
@@ -115,16 +151,28 @@ async function fetchImageTags() {
   }
 }
 
+async function refreshImageTags() {
+  await fetchImageTags(true)
+  if (imageTags.value.length > 0) {
+    toast.info(`已刷新，最新版本: ${imageTags.value[0]}`)
+  } else {
+    toast.warning('未获取到镜像 Tag')
+  }
+}
+
 // ── 基础域名（从 Settings 加载，用于展示访问地址）──
 const baseDomain = ref('')
+const subdomainSuffix = ref('')
 
 async function fetchBaseDomain() {
   try {
     const res = await api.get('/settings')
     const data = res.data.data as Record<string, string | null>
     baseDomain.value = data.ingress_base_domain || ''
+    subdomainSuffix.value = data.ingress_subdomain_suffix || ''
   } catch {
     baseDomain.value = ''
+    subdomainSuffix.value = ''
   }
 }
 
@@ -162,8 +210,10 @@ async function fetchStorageClasses() {
 
 const accessUrl = computed(() => {
   if (!form.value.name || !baseDomain.value) return ''
-  const proto = baseDomain.value ? 'https' : 'http'
-  return `${proto}://${form.value.name}.${baseDomain.value}`
+  const host = subdomainSuffix.value
+    ? `${form.value.name}-${subdomainSuffix.value}.${baseDomain.value}`
+    : `${form.value.name}.${baseDomain.value}`
+  return `https://${host}`
 })
 
 // ── Env vars ──
@@ -200,16 +250,12 @@ onMounted(async () => {
   await Promise.all([
     clusterStore.fetchClusters(),
     instanceStore.fetchInstances(),
-    fetchImageTags(),
+    fetchImageTags(true),
     fetchBaseDomain(),
     fetchStorageClasses(),
   ])
   // 自动生成实例名称
   generateDefaultName()
-  // 默认选中最新的镜像 tag
-  if (imageTags.value.length > 0) {
-    form.value.image_version = imageTags.value[0]
-  }
 })
 
 function buildPayload() {
@@ -297,7 +343,7 @@ function prevStep() {
 
 // ── Step validation ──
 const canProceedStep0 = computed(() =>
-  !!form.value.name && !!form.value.image_version && !!selectedCluster.value
+  !!form.value.name && !!form.value.image_version && !!selectedCluster.value && !nameConflict.value.conflict && !checkingName.value
 )
 const canProceedStep1 = computed(() =>
   !!form.value.quota_cpu && !!form.value.quota_mem
@@ -451,22 +497,52 @@ const yamlPreview = computed(() => {
         <div class="grid grid-cols-2 gap-4">
           <div>
             <label class="text-sm font-medium mb-1.5 block">实例名称 *</label>
-            <Input v-model="form.name" placeholder="如: prod-main" />
-          </div>
-          <div>
-            <label class="text-sm font-medium mb-1.5 block">镜像版本 *</label>
             <div class="relative">
               <Input
-                v-model="form.image_version"
-                :placeholder="loadingTags ? '加载中...' : '选择或输入版本'"
-                list="image-tag-list"
+                v-model="form.name"
+                placeholder="如: prod-main"
+                :class="nameConflict.conflict ? 'border-red-400 focus-visible:ring-red-400/30' : ''"
               />
-              <datalist id="image-tag-list">
-                <option v-for="tag in imageTags" :key="tag" :value="tag" />
-              </datalist>
+              <Loader2
+                v-if="checkingName"
+                class="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground animate-spin"
+              />
             </div>
+            <p v-if="nameConflict.conflict" class="flex items-center gap-1 text-xs text-red-400 mt-1">
+              <CircleAlert class="w-3.5 h-3.5 shrink-0" />
+              {{ nameConflict.reason }}
+            </p>
+          </div>
+          <div>
+            <div class="flex items-center gap-1.5 mb-1.5">
+              <label class="text-sm font-medium">镜像版本 *</label>
+              <button
+                class="inline-flex items-center justify-center w-5 h-5 rounded hover:bg-muted transition-colors"
+                :class="{ 'animate-spin': loadingTags }"
+                :disabled="loadingTags"
+                title="刷新镜像版本列表"
+                @click="refreshImageTags"
+              >
+                <RefreshCw class="w-3.5 h-3.5 text-muted-foreground" />
+              </button>
+            </div>
+            <Select v-if="imageTags.length > 0" v-model="form.image_version" :key="imageTags.length">
+              <SelectTrigger class="w-full font-mono text-sm">
+                <SelectValue placeholder="选择镜像版本" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem v-for="tag in imageTags" :key="tag" :value="tag">
+                  {{ tag }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <Input
+              v-else
+              v-model="form.image_version"
+              :placeholder="loadingTags ? '加载中...' : '手动输入版本号'"
+            />
             <p v-if="imageTags.length === 0 && !loadingTags" class="text-xs text-muted-foreground mt-1">
-              未配置镜像仓库，请手动输入版本号
+              未配置镜像仓库或无可用 Tag，请手动输入
             </p>
           </div>
           <div>

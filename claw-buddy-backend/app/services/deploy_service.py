@@ -10,6 +10,7 @@ import asyncio
 import logging
 import re as _re
 import json as _json
+import secrets as _secrets
 from datetime import datetime, timezone
 from dataclasses import dataclass
 
@@ -205,18 +206,35 @@ class _DeployContext:
     env_vars: dict | None
     advanced_config: dict | None
     kubeconfig_encrypted: str
+    org_id: str | None = None
 
 
 async def deploy_instance(
-    req: DeployRequest, user: User, db: AsyncSession
+    req: DeployRequest, user: User, db: AsyncSession, org_id: str | None = None
 ) -> str:
     """
     同步阶段：创建 Instance + DeployRecord，立即返回 record.id。
     不执行任何 K8s 操作，由调用方用 asyncio.create_task 启动后台管道。
     """
+    # 组织配额检查 + 专属集群路由
+    effective_cluster_id = req.cluster_id
+    if org_id:
+        from app.models.organization import Organization
+        from app.services.billing_service import check_deploy_quota
+        org_result = await db.execute(
+            select(Organization).where(Organization.id == org_id, Organization.deleted_at.is_(None))
+        )
+        org = org_result.scalar_one_or_none()
+        if org:
+            await check_deploy_quota(org, db)
+            # 如果组织绑定了专属集群，强制使用该集群
+            if org.cluster_id:
+                effective_cluster_id = org.cluster_id
+                logger.info("组织 %s 绑定专属集群 %s，覆盖用户选择", org.slug, org.cluster_id)
+
     # 校验集群
     result = await db.execute(
-        select(Cluster).where(Cluster.id == req.cluster_id, Cluster.deleted_at.is_(None))
+        select(Cluster).where(Cluster.id == effective_cluster_id, Cluster.deleted_at.is_(None))
     )
     cluster = result.scalar_one_or_none()
     if not cluster:
@@ -226,6 +244,11 @@ async def deploy_instance(
     safe_name = _re.sub(r"[^a-z0-9-]", "-", req.name.lower()).strip("-")
     safe_name = _re.sub(r"-{2,}", "-", safe_name)
     namespace = req.namespace or f"clawbuddy-{safe_name}"
+
+    # 自动注入 OPENCLAW_GATEWAY_TOKEN（用户未提供时自动生成）
+    env_vars = dict(req.env_vars) if req.env_vars else {}
+    if "OPENCLAW_GATEWAY_TOKEN" not in env_vars:
+        env_vars["OPENCLAW_GATEWAY_TOKEN"] = _secrets.token_hex(24)
 
     # 创建实例记录
     instance = Instance(
@@ -240,12 +263,13 @@ async def deploy_instance(
         mem_limit=req.mem_limit,
         service_type="ClusterIP",
         ingress_domain=None,
-        env_vars=_json.dumps(req.env_vars) if req.env_vars else None,
+        env_vars=_json.dumps(env_vars),
         advanced_config=_json.dumps(req.advanced_config) if req.advanced_config else None,
         storage_class=req.storage_class,
         storage_size=req.storage_size,
         status=InstanceStatus.deploying,
         created_by=user.id,
+        org_id=org_id,
     )
     db.add(instance)
     await db.commit()
@@ -288,9 +312,10 @@ async def deploy_instance(
         storage_size=req.storage_size,
         quota_cpu=req.quota_cpu,
         quota_mem=req.quota_mem,
-        env_vars=req.env_vars,
+        env_vars=env_vars,
         advanced_config=req.advanced_config,
         kubeconfig_encrypted=cluster.kubeconfig_encrypted,
+        org_id=org_id,
     )
 
 
@@ -352,7 +377,8 @@ async def _execute_deploy_inner(ctx, async_session_factory, get_config, total) -
 
             # Step 2: 创建命名空间 + ResourceQuota
             _publish(2, DEPLOY_STEPS[1])
-            await k8s.ensure_namespace(ctx.namespace)
+            ns_labels = {"clawbuddy.io/org-id": ctx.org_id} if ctx.org_id else None
+            await k8s.ensure_namespace(ctx.namespace, extra_labels=ns_labels)
             rq = build_resource_quota(
                 f"{ctx.namespace}-quota", ctx.namespace,
                 cpu=ctx.quota_cpu, mem=ctx.quota_mem,
@@ -422,9 +448,13 @@ async def _execute_deploy_inner(ctx, async_session_factory, get_config, total) -
             # Step 7: 创建 Ingress（自动子域名路由）
             _publish(7, DEPLOY_STEPS[6])
             ingress_base_domain = await get_config("ingress_base_domain", db)
+            subdomain_suffix = await get_config("ingress_subdomain_suffix", db)
             tls_secret_name = await get_config("tls_secret_name", db)
             if ingress_base_domain:
-                ingress_host = f"{ctx.name}.{ingress_base_domain}"
+                if subdomain_suffix:
+                    ingress_host = f"{ctx.name}-{subdomain_suffix}.{ingress_base_domain}"
+                else:
+                    ingress_host = f"{ctx.name}.{ingress_base_domain}"
                 ing = build_ingress(
                     ctx.name, ctx.namespace, ingress_host, labels,
                     tls_secret_name=tls_secret_name,
@@ -440,11 +470,11 @@ async def _execute_deploy_inner(ctx, async_session_factory, get_config, total) -
             else:
                 logger.warning("未配置 ingress_base_domain，跳过 Ingress 创建")
 
-            # Step 8: 配置网络策略
+            # Step 8: 配置网络策略（多租户隔离）
             _publish(8, DEPLOY_STEPS[7])
+            peer_namespaces = []
             if ctx.advanced_config and ctx.advanced_config.get("network", {}).get("peers"):
                 peer_ids = ctx.advanced_config["network"]["peers"]
-                peer_namespaces = []
                 for pid in peer_ids:
                     peer_result = await db.execute(
                         select(Instance).where(Instance.id == pid, Instance.deleted_at.is_(None))
@@ -452,16 +482,18 @@ async def _execute_deploy_inner(ctx, async_session_factory, get_config, total) -
                     peer_inst = peer_result.scalar_one_or_none()
                     if peer_inst:
                         peer_namespaces.append(peer_inst.namespace)
-                if peer_namespaces:
-                    np = build_network_policy(
-                        f"{ctx.name}-allow-peers", ctx.namespace, labels, peer_namespaces
-                    )
-                    try:
-                        await k8s.networking.create_namespaced_network_policy(ctx.namespace, np)
-                    except Exception:
-                        await k8s.networking.patch_namespaced_network_policy(
-                            f"{ctx.name}-allow-peers", ctx.namespace, np
-                        )
+
+            # 始终创建默认隔离策略（允许 Ingress + 同 NS + 同组织 peer）
+            np = build_network_policy(
+                f"{ctx.name}-isolation", ctx.namespace, labels,
+                peer_namespaces, org_id=ctx.org_id,
+            )
+            try:
+                await k8s.networking.create_namespaced_network_policy(ctx.namespace, np)
+            except Exception:
+                await k8s.networking.patch_namespaced_network_policy(
+                    f"{ctx.name}-isolation", ctx.namespace, np
+                )
 
             # Step 9: 等待 Deployment 就绪（最多 300 秒）
             _publish(9, DEPLOY_STEPS[8], logs=["开始等待 Pod 就绪..."])

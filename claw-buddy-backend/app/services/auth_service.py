@@ -11,18 +11,18 @@ from app.schemas.auth import LoginResponse, TokenResponse, UserInfo
 from app.utils.feishu import exchange_code_for_user
 
 
-async def feishu_login(code: str, db: AsyncSession) -> LoginResponse:
+async def feishu_login(code: str, db: AsyncSession, redirect_uri: str | None = None) -> LoginResponse:
     """
     Handle Feishu SSO callback:
     1. Exchange code for user info via Feishu API
     2. Upsert user record
     3. Issue JWT tokens
     """
-    feishu_user = await exchange_code_for_user(code)
+    feishu_user = await exchange_code_for_user(code, redirect_uri=redirect_uri)
 
     # Upsert user by feishu open_id
     result = await db.execute(
-        select(User).where(User.feishu_uid == feishu_user["open_id"])
+        select(User).where(User.feishu_uid == feishu_user["open_id"], User.deleted_at.is_(None))
     )
     user = result.scalar_one_or_none()
 
@@ -63,7 +63,9 @@ async def refresh_tokens(refresh_token_str: str, db: AsyncSession) -> TokenRespo
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token 类型错误")
 
     user_id = payload.get("sub")
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User).where(User.id == user_id, User.deleted_at.is_(None))
+    )
     user = result.scalar_one_or_none()
 
     if user is None or not user.is_active:

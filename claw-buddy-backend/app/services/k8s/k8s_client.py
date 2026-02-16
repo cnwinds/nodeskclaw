@@ -109,16 +109,16 @@ class K8sClient:
         ns_list = await self.core.list_namespace()
         return [ns.metadata.name for ns in ns_list.items]
 
-    async def ensure_namespace(self, name: str):
+    async def ensure_namespace(self, name: str, extra_labels: dict[str, str] | None = None):
+        labels = {"app.kubernetes.io/managed-by": "clawbuddy"}
+        if extra_labels:
+            labels.update(extra_labels)
         try:
             await self.core.read_namespace(name)
         except k8s_client.ApiException as e:
             if e.status == 404:
                 body = k8s_client.V1Namespace(
-                    metadata=k8s_client.V1ObjectMeta(
-                        name=name,
-                        labels={"app.kubernetes.io/managed-by": "clawbuddy"},
-                    )
+                    metadata=k8s_client.V1ObjectMeta(name=name, labels=labels)
                 )
                 await self.core.create_namespace(body)
             else:
@@ -222,6 +222,27 @@ class K8sClient:
         resp = await self.core.read_namespaced_pod_log(pod, ns, **kwargs)
         async for line in resp.content:
             yield line.decode("utf-8", errors="replace").rstrip("\n")
+
+    # ── Exec ──────────────────────────────────────────
+
+    async def exec_in_pod(
+        self, ns: str, pod: str, command: list[str], container: str | None = None
+    ) -> str:
+        """Execute a command in a pod and return stdout."""
+        from kubernetes_asyncio.stream import WsApiClient
+
+        async with WsApiClient(self._api.configuration) as ws_api:
+            core_ws = k8s_client.CoreV1Api(api_client=ws_api)
+            resp = await core_ws.connect_get_namespaced_pod_exec(
+                pod, ns,
+                command=command,
+                container=container,
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+        return resp.strip() if resp else ""
 
     # ── Watch ────────────────────────────────────────
 

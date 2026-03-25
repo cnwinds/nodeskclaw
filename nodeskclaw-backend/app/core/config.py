@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     # ── Agent Tunnel（实例通过 WebSocket 主动连接后端的地址）────
     TUNNEL_BASE_URL: str = ""
 
+    # ── Docker 本地实例访问地址（用于前端展示与后端探活）────────
+    HOST_IP: str = "localhost"  # 宿主机可访问地址，如 192.168.11.38（不含协议/端口）
+
     # ── 出站代理（用于访问 OpenAI/Anthropic 等外部 API）────
     HTTPS_PROXY: str = ""
 

@@ -8,6 +8,7 @@ import logging
 import os
 import re
 
+from app.core.config import settings
 from app.services.docker_constants import DOCKER_DATA_DIR
 from app.services.runtime.compute.base import (
     ComputeHandle,
@@ -20,11 +21,10 @@ _LOCALHOST_RE = re.compile(r"(https?://)(localhost|127\.0\.0\.1)(:\d+)?")
 
 
 def _docker_endpoint_host() -> str:
-    """Return the hostname for reaching host-mapped ports from the backend process.
-
-    Inside a container: host.docker.internal (host ports are not on localhost).
-    On the host directly: localhost.
-    """
+    """Return the host address for accessing host-mapped Docker ports."""
+    host = (settings.HOST_IP or "").strip()
+    if host:
+        return host
     if os.path.exists("/.dockerenv") or os.environ.get("DOCKER_DATA_DIR"):
         return "host.docker.internal"
     return "localhost"

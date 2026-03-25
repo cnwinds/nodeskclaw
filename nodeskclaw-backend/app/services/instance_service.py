@@ -10,6 +10,7 @@ from typing import Coroutine
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.config import settings
 from app.core.exceptions import BadRequestError, ConflictError, NotFoundError
 from app.models.cluster import Cluster
 from app.models.workspace import Workspace
@@ -95,6 +96,11 @@ def _get_docker_provider():
         return spec.provider
     from app.services.runtime.compute.docker_provider import DockerComputeProvider
     return DockerComputeProvider()
+
+
+def _docker_host_ip() -> str:
+    host = (settings.HOST_IP or "").strip()
+    return host or "localhost"
 
 
 async def _in_deploy_grace(instance_id: str, db: AsyncSession, grace_seconds: int = 60) -> bool:
@@ -256,14 +262,15 @@ async def get_instance_detail(instance_id: str, db: AsyncSession) -> InstanceDet
     if instance.compute_provider == "docker":
         provider = _get_docker_provider()
         handle = _build_docker_handle(instance)
+        docker_host = _docker_host_ip()
         try:
             status = await provider.get_status(handle)
             detail.pods = [{
                 "name": instance.slug,
                 "status": "Running" if status == "running" else status.capitalize(),
                 "ready": status == "running",
-                "node": "localhost",
-                "ip": "127.0.0.1",
+                "node": docker_host,
+                "ip": docker_host,
                 "restart_count": 0,
                 "containers": [{
                     "name": instance.slug,

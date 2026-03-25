@@ -7,6 +7,7 @@ import logging
 import os
 import signal
 
+from app.core.config import settings
 from app.services.runtime.compute.base import (
     ComputeHandle,
     InstanceComputeConfig,
@@ -40,6 +41,7 @@ class ProcessComputeProvider:
 
         env = {**os.environ, **{k: str(v) for k, v in config.env_vars.items()}}
         port = config.extra.get("port", 3000)
+        host = (settings.HOST_IP or "").strip() or "localhost"
 
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -54,7 +56,7 @@ class ProcessComputeProvider:
                 provider=self.provider_id,
                 instance_id=config.instance_id,
                 namespace="local",
-                endpoint=f"http://localhost:{port}",
+                endpoint=f"http://{host}:{port}",
                 status="running",
                 extra={"pid": proc.pid},
             )

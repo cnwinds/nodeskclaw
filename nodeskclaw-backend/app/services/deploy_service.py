@@ -412,6 +412,8 @@ async def deploy_instance(
     if docker_host_port is not None:
         env_vars["DOCKER_HOST_PORT"] = str(docker_host_port)
 
+    docker_host = (settings.HOST_IP or "").strip() or "localhost"
+
     # 创建实例记录
     instance = Instance(
         name=req.name,
@@ -425,7 +427,7 @@ async def deploy_instance(
         mem_request=req.mem_request,
         mem_limit=req.mem_limit,
         service_type="ClusterIP" if not is_docker else "docker",
-        ingress_domain=f"localhost:{docker_host_port}" if is_docker else None,
+        ingress_domain=f"{docker_host}:{docker_host_port}" if is_docker else None,
         compute_provider="docker" if is_docker else "k8s",
         proxy_token=gateway_token,
         wp_api_key=f"nodeskclaw-wp-{_secrets.token_hex(32)}",

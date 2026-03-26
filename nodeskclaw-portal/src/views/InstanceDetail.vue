@@ -85,8 +85,13 @@ async function viewLogs(podName: string) {
   logsLoading.value = true
   logsContent.value = ''
   try {
-    const res = await api.get(`/instances/${instanceId.value}/pods/${podName}/logs`, { params: { tail: 100 } })
-    logsContent.value = res.data?.logs || res.data || ''
+    const res = await api.get(`/instances/${instanceId.value}/pods/${podName}/logs`, { params: { tail_lines: 100 } })
+    const raw = typeof res.data?.data === 'string'
+      ? res.data.data
+      : (typeof res.data === 'string' ? res.data : '')
+    logsContent.value = raw.includes('\\n') && !raw.includes('\n')
+      ? raw.replace(/\\n/g, '\n')
+      : raw
     logsVisible.value = true
   } catch {
     toast.error(t('instanceDetail.logsLoadFailed'))

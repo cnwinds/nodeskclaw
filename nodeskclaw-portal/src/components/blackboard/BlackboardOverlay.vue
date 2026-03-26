@@ -162,7 +162,7 @@ const canEditTab = computed(() => activeTab.value === 'notes-perf')
           <template v-if="activeTab === 'objectives-tasks'">
             <div class="space-y-6">
               <ObjectivePanel ref="objectivePanelRef" :workspace-id="workspaceId" />
-              <TaskKanban ref="taskKanbanRef" :workspace-id="workspaceId" />
+              <TaskKanban ref="taskKanbanRef" :workspace-id="workspaceId" :can-edit="canEdit" />
               <SchedulePanel :workspace-id="workspaceId" />
               <RoiDashboard v-if="isPerformanceEnabled" ref="roiDashboardRef" :workspace-id="workspaceId" />
             </div>

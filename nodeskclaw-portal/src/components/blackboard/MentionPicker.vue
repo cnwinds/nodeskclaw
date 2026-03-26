@@ -56,21 +56,13 @@ function onInput() {
   const text = props.modelValue
   const before = text.slice(0, cursor)
 
-  const atIdx = before.lastIndexOf('@')
-  if (atIdx === -1) {
+  const match = /@([^\s@]*)$/.exec(before)
+  if (!match) {
     showPicker.value = false
     return
   }
-  const charBeforeAt = atIdx > 0 ? before[atIdx - 1] : ' '
-  if (charBeforeAt !== ' ' && charBeforeAt !== '\n' && atIdx !== 0) {
-    showPicker.value = false
-    return
-  }
-  const fragment = before.slice(atIdx + 1)
-  if (fragment.includes(' ') || fragment.includes('\n')) {
-    showPicker.value = false
-    return
-  }
+  const atIdx = before.length - match[0].length
+  const fragment = match[1]
   query.value = fragment
   atStartPos.value = atIdx
   showPicker.value = true

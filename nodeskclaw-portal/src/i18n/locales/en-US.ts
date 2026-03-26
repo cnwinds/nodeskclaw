@@ -443,7 +443,7 @@ const enUS = {
     newPost: "New Post",
     noPosts: "No posts yet",
     postTitlePlaceholder: "Post title...",
-    postContentPlaceholder: "Post content (Markdown), use @agent:{id} to mention...",
+    postContentPlaceholder: "Post content (Markdown), use {'@agent:{id}'} to mention...",
     publish: "Publish",
     replies: "Replies",
     replyPlaceholder: "Write a reply... (Cmd+Enter to send)",

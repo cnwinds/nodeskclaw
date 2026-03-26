@@ -443,7 +443,7 @@ const zhCN = {
     newPost: "发帖",
     noPosts: "暂无讨论",
     postTitlePlaceholder: "帖子标题...",
-    postContentPlaceholder: "帖子内容（Markdown），使用 @agent:{id} 提及 AI 员工...",
+    postContentPlaceholder: "帖子内容（Markdown），使用 {'@agent:{id}'} 提及 AI 员工...",
     publish: "发布",
     replies: "回复",
     replyPlaceholder: "写回复...（Cmd+Enter 发送）",

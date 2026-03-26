@@ -634,15 +634,41 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   function _handleAgentDone(data: Record<string, unknown>) {
     const instanceId = data.instance_id as string
+    const agentName = data.agent_name as string
+    const fullContent = data.full_content as string | undefined
+    const traceId = data.trace_id as string | undefined
     typingAgents.value.delete(instanceId)
     _clearTypingTimer(instanceId)
 
     const streaming = chatMessages.value.find(
-      (m) => m.sender_id === instanceId && m.streaming,
+      (m) => m.sender_id === instanceId && m.streaming && (!traceId || m.trace_id === traceId),
     )
     if (streaming) {
       streaming.streaming = false
       streaming.content = (data.full_content as string) || streaming.content
+      return
+    }
+
+    // 容错：若 chunk 丢失但 done 抵达，仍需落一条完整回复，避免“容器有回复但聊天窗无消息”。
+    if (fullContent && fullContent.trim()) {
+      const exists = chatMessages.value.some((m) =>
+        m.sender_id === instanceId &&
+        m.trace_id === traceId &&
+        m.content === fullContent,
+      )
+      if (!exists) {
+        chatMessages.value.push({
+          id: `done-${instanceId}-${traceId || Date.now()}`,
+          sender_type: 'agent',
+          sender_id: instanceId,
+          sender_name: agentName,
+          content: fullContent,
+          message_type: 'chat',
+          created_at: new Date().toISOString(),
+          trace_id: traceId,
+        })
+        _incrementUnread()
+      }
     }
   }
 

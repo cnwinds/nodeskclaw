@@ -4,10 +4,13 @@ import { Plus, Pin, MessageSquare, ChevronLeft, ChevronRight, Loader2 } from 'lu
 import { useI18n } from 'vue-i18n'
 import api from '@/services/api'
 import MentionPicker from './MentionPicker.vue'
+import { useWorkspaceStore } from '@/stores/workspace'
+import { replaceMentionTokens } from '@/utils/mentionText'
 
 const props = defineProps<{ workspaceId: string }>()
 const emit = defineEmits<{ (e: 'select', postId: string): void }>()
 const { t } = useI18n()
+const store = useWorkspaceStore()
 
 interface PostItem {
   id: string
@@ -73,6 +76,15 @@ function formatTime(ts: string | null) {
   if (!ts) return ''
   const d = new Date(ts)
   return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function formatMentionText(raw: string | null | undefined): string {
+  return replaceMentionTokens(
+    raw || '',
+    store.currentWorkspace?.agents || [],
+    store.members,
+    t('chat.mentionAll'),
+  )
 }
 
 onMounted(fetchPosts)
@@ -149,7 +161,7 @@ watch(() => props.workspaceId, fetchPosts)
       >
         <div class="flex items-center gap-2">
           <Pin v-if="post.is_pinned" class="w-3.5 h-3.5 text-primary shrink-0" />
-          <span class="text-sm font-medium truncate flex-1">{{ post.title }}</span>
+          <span class="text-sm font-medium truncate flex-1">{{ formatMentionText(post.title) }}</span>
           <span class="flex items-center gap-0.5 text-xs text-muted-foreground shrink-0">
             <MessageSquare class="w-3 h-3" />
             {{ post.reply_count }}

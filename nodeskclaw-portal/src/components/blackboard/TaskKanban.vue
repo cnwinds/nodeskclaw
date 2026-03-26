@@ -4,6 +4,7 @@ import { Archive, AlertCircle, Clock, CheckCircle2, Play, Plus, Loader2, DollarS
 import { useWorkspaceStore, type TaskInfo } from '@/stores/workspace'
 import { useI18n } from 'vue-i18n'
 import MentionPicker from './MentionPicker.vue'
+import { replaceMentionTokens } from '@/utils/mentionText'
 
 const props = withDefaults(defineProps<{
   workspaceId: string
@@ -33,6 +34,15 @@ const columns = computed(() => [
   { key: 'done', label: t('blackboard.taskDone'), icon: CheckCircle2, color: 'text-green-500' },
   { key: 'blocked', label: t('blackboard.taskBlocked'), icon: AlertCircle, color: 'text-red-500' },
 ])
+
+function formatMentionText(raw: string | null | undefined): string {
+  return replaceMentionTokens(
+    raw || '',
+    store.currentWorkspace?.agents || [],
+    store.members,
+    t('chat.mentionAll'),
+  )
+}
 
 function tasksByStatus(status: string) {
   return tasks.value.filter(t => t.status === status)
@@ -236,13 +246,13 @@ defineExpose({ refresh: loadTasks })
           class="p-2.5 rounded-lg bg-muted/50 border border-border/50 space-y-1.5 text-xs"
         >
           <div class="flex items-start justify-between gap-1">
-            <span class="font-medium text-sm leading-tight">{{ task.title }}</span>
+            <span class="font-medium text-sm leading-tight">{{ formatMentionText(task.title) }}</span>
             <span v-if="task.priority" class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium" :class="priorityBadgeClass(task.priority)">
               {{ task.priority }}
             </span>
           </div>
 
-          <p v-if="task.description" class="text-muted-foreground line-clamp-2">{{ task.description }}</p>
+          <p v-if="task.description" class="text-muted-foreground line-clamp-2">{{ formatMentionText(task.description) }}</p>
 
           <div v-if="task.assignee_name" class="text-muted-foreground">
             {{ t('blackboard.assignee') }}: {{ task.assignee_name }}

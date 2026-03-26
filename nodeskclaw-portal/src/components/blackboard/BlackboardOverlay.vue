@@ -67,6 +67,7 @@ watch(() => props.open, (isOpen) => {
     selectedPostId.value = null
     activeTab.value = 'objectives-tasks'
     store.fetchUnreadPostCount(props.workspaceId)
+    store.fetchMembers(props.workspaceId)
   } else {
     store.setPostsTabVisible(false)
   }

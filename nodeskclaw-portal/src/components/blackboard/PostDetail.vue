@@ -5,10 +5,13 @@ import { useI18n } from 'vue-i18n'
 import api from '@/services/api'
 import { renderMarkdown } from '@/utils/markdown'
 import MentionPicker from './MentionPicker.vue'
+import { useWorkspaceStore } from '@/stores/workspace'
+import { replaceMentionTokens } from '@/utils/mentionText'
 
 const props = defineProps<{ workspaceId: string; postId: string }>()
 const emit = defineEmits<{ (e: 'back'): void }>()
 const { t } = useI18n()
+const store = useWorkspaceStore()
 
 interface ReplyItem {
   id: string
@@ -80,7 +83,16 @@ async function togglePin() {
 }
 
 function renderMd(raw: string) {
-  return renderMarkdown(raw)
+  return renderMarkdown(formatMentionText(raw))
+}
+
+function formatMentionText(raw: string | null | undefined): string {
+  return replaceMentionTokens(
+    raw || '',
+    store.currentWorkspace?.agents || [],
+    store.members,
+    t('chat.mentionAll'),
+  )
 }
 
 function formatTime(ts: string) {
@@ -98,7 +110,7 @@ watch(() => props.postId, fetchPost)
       <button class="p-1 rounded hover:bg-muted transition-colors" @click="emit('back')">
         <ArrowLeft class="w-4 h-4" />
       </button>
-      <span v-if="post" class="text-sm font-medium truncate flex-1">{{ post.title }}</span>
+      <span v-if="post" class="text-sm font-medium truncate flex-1">{{ formatMentionText(post.title) }}</span>
       <button
         v-if="post"
         class="p-1 rounded hover:bg-muted transition-colors"

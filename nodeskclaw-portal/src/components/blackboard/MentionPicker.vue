@@ -90,6 +90,10 @@ function select(candidate: MentionCandidate) {
 }
 
 function onKeydown(e: KeyboardEvent) {
+  if (e.key === '@') {
+    nextTick(() => onInput())
+    return
+  }
   if (!showPicker.value || filtered.value.length === 0) return
   if (e.key === 'ArrowDown') {
     e.preventDefault()

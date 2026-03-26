@@ -37,6 +37,8 @@ def build_system_envelope(
             ),
             intent=IntentType.NOTIFY,
             content=content,
+            # 对定向系统通知同步填充 mentions，确保投递层不会被 mention-only 策略误判为 no-reply。
+            mentions=routing_targets,
             priority=Priority.NORMAL,
             routing=MessageRouting(mode=mode, targets=routing_targets),
         ),

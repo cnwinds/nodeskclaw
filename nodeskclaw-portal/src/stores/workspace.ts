@@ -949,7 +949,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
 
     eventSource.onopen = () => {
+      const shouldCatchUp = _reconnectAttempts > 0
       _reconnectAttempts = 0
+      if (shouldCatchUp) {
+        fetchChatHistory(workspaceId).catch((err) => {
+          console.warn('[SSE] catch-up chat history failed', err)
+        })
+      }
     }
 
     eventSource.onerror = () => {

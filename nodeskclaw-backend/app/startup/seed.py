@@ -336,10 +336,13 @@ async def _ensure_workspace_schedules(session_factory: async_sessionmaker[AsyncS
         from app.models.workspace import Workspace
         from app.models.workspace_schedule import WorkspaceSchedule
 
+        target_cron_expr = "0 * * * *"
         all_ws = (await db.execute(
             select(Workspace).where(Workspace.deleted_at.is_(None))
         )).scalars().all()
 
+        created_count = 0
+        updated_count = 0
         for ws in all_ws:
             existing = (await db.execute(
                 select(WorkspaceSchedule).where(
@@ -352,9 +355,16 @@ async def _ensure_workspace_schedules(session_factory: async_sessionmaker[AsyncS
                 db.add(WorkspaceSchedule(
                     workspace_id=ws.id,
                     name="定时巡检",
-                    cron_expr="0 */4 * * *",
+                    cron_expr=target_cron_expr,
                     message_template="请检查黑板待办任务队列，接取并执行优先级最高的任务。完成后汇报进展。",
                     is_active=False,
                 ))
+                created_count += 1
+            elif existing.cron_expr != target_cron_expr:
+                existing.cron_expr = target_cron_expr
+                updated_count += 1
         await db.commit()
-        logger.info("种子数据：已为 %d 个工作区检查/补建定时巡检定时器", len(all_ws))
+        logger.info(
+            "种子数据：已为 %d 个工作区检查/补建定时巡检定时器（新增 %d，更新 %d）",
+            len(all_ws), created_count, updated_count
+        )

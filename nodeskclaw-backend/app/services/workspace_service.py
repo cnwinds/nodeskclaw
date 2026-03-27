@@ -123,7 +123,7 @@ async def create_workspace(db: AsyncSession, org_id: str, user_id: str, data: Wo
     schedule = WorkspaceSchedule(
         workspace_id=ws.id,
         name="定时巡检",
-        cron_expr="0 */4 * * *",
+        cron_expr="0 * * * *",
         message_template="请检查黑板待办任务队列，接取并执行优先级最高的任务。完成后汇报进展。",
         is_active=False,
     )

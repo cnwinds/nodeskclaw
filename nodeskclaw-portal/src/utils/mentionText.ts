@@ -2,6 +2,12 @@ import type { AgentBrief, WorkspaceMemberInfo } from '@/stores/workspace'
 
 const MENTION_TOKEN_RE = /@(?:(agent|human):)?([a-f0-9-]{36}|__all__)\b/gi
 
+export interface MentionSelection {
+  type: 'agent' | 'human'
+  id: string
+  name: string
+}
+
 export function replaceMentionTokens(
   raw: string,
   agents: AgentBrief[],
@@ -27,4 +33,17 @@ export function replaceMentionTokens(
 
     return name ? `@${name}` : full
   })
+}
+
+export function encodeMentionNamesToTokens(raw: string, mentions: MentionSelection[]): string {
+  if (!raw || mentions.length === 0) return raw
+  let result = raw
+  for (const m of mentions) {
+    const visible = `@${m.name}`
+    const token = `@${m.type}:${m.id}`
+    const idx = result.indexOf(visible)
+    if (idx < 0) continue
+    result = result.slice(0, idx) + token + result.slice(idx + visible.length)
+  }
+  return result
 }

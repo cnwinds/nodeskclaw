@@ -6,7 +6,7 @@ import api from '@/services/api'
 import { renderMarkdown } from '@/utils/markdown'
 import MentionPicker from './MentionPicker.vue'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { replaceMentionTokens } from '@/utils/mentionText'
+import { encodeMentionNamesToTokens, replaceMentionTokens, type MentionSelection } from '@/utils/mentionText'
 
 const props = defineProps<{ workspaceId: string; postId: string }>()
 const emit = defineEmits<{ (e: 'back'): void }>()
@@ -38,6 +38,7 @@ interface PostData {
 const post = ref<PostData | null>(null)
 const loading = ref(false)
 const replyContent = ref('')
+const replyMentions = ref<MentionSelection[]>([])
 const replying = ref(false)
 const replyTextareaRef = ref<HTMLTextAreaElement | null>(null)
 const mentionPickerRef = ref<InstanceType<typeof MentionPicker> | null>(null)
@@ -60,9 +61,10 @@ async function sendReply() {
   replying.value = true
   try {
     await api.post(`/workspaces/${props.workspaceId}/blackboard/posts/${props.postId}/replies`, {
-      content: replyContent.value.trim(),
+      content: encodeMentionNamesToTokens(replyContent.value.trim(), replyMentions.value),
     })
     replyContent.value = ''
+    replyMentions.value = []
     await fetchPost()
   } catch (e) {
     console.error('reply error:', e)
@@ -170,6 +172,7 @@ watch(() => props.postId, fetchPost)
           <MentionPicker
             ref="mentionPickerRef"
             v-model="replyContent"
+            v-model:mentions="replyMentions"
             :textarea-el="replyTextareaRef"
           />
         </div>

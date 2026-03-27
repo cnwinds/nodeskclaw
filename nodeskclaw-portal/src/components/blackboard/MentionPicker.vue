@@ -2,14 +2,17 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import { Bot, User } from 'lucide-vue-next'
 import { useWorkspaceStore } from '@/stores/workspace'
+import type { MentionSelection } from '@/utils/mentionText'
 
 const props = defineProps<{
   modelValue: string
   textareaEl: HTMLTextAreaElement | null
+  mentions?: MentionSelection[]
 }>()
 
 const emit = defineEmits<{
   (e: 'update:modelValue', val: string): void
+  (e: 'update:mentions', val: MentionSelection[]): void
 }>()
 
 const store = useWorkspaceStore()
@@ -24,6 +27,11 @@ const showPicker = ref(false)
 const query = ref('')
 const selectedIdx = ref(0)
 const atStartPos = ref(-1)
+const selectedMentions = ref<MentionSelection[]>(props.mentions ? [...props.mentions] : [])
+
+watch(() => props.mentions, (val) => {
+  selectedMentions.value = val ? [...val] : []
+})
 
 const candidates = computed<MentionCandidate[]>(() => {
   const agents: MentionCandidate[] = (store.currentWorkspace?.agents || []).map(a => ({
@@ -53,7 +61,7 @@ function onInput() {
   const el = props.textareaEl
   if (!el) return
   const cursor = el.selectionStart ?? 0
-  const text = props.modelValue
+  const text = el.value
   const before = text.slice(0, cursor)
 
   const match = /@([^\s@]*)$/.exec(before)
@@ -72,11 +80,19 @@ function select(candidate: MentionCandidate) {
   const start = atStartPos.value
   if (start < 0) return
   const el = props.textareaEl
-  const cursor = el?.selectionStart ?? props.modelValue.length
-  const before = props.modelValue.slice(0, start)
-  const after = props.modelValue.slice(cursor)
-  const insertText = `@${candidate.type}:${candidate.id} `
+  const value = el?.value ?? props.modelValue
+  const cursor = el?.selectionStart ?? value.length
+  const before = value.slice(0, start)
+  const after = value.slice(cursor)
+  const insertText = `@${candidate.name} `
   emit('update:modelValue', before + insertText + after)
+  const nextMentions = [...selectedMentions.value, {
+    type: candidate.type,
+    id: candidate.id,
+    name: candidate.name,
+  }]
+  selectedMentions.value = nextMentions
+  emit('update:mentions', nextMentions)
   showPicker.value = false
 
   nextTick(() => {

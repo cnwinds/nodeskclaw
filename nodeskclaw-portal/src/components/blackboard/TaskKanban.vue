@@ -4,7 +4,7 @@ import { Archive, AlertCircle, Clock, CheckCircle2, Play, Plus, Loader2, DollarS
 import { useWorkspaceStore, type TaskInfo } from '@/stores/workspace'
 import { useI18n } from 'vue-i18n'
 import MentionPicker from './MentionPicker.vue'
-import { replaceMentionTokens } from '@/utils/mentionText'
+import { encodeMentionNamesToTokens, replaceMentionTokens, type MentionSelection } from '@/utils/mentionText'
 
 const props = withDefaults(defineProps<{
   workspaceId: string
@@ -25,6 +25,7 @@ const newTitle = ref('')
 const newDescription = ref('')
 const newPriority = ref<'low' | 'medium' | 'high' | 'urgent'>('medium')
 const newEstimatedValue = ref<number | null>(null)
+const newMentions = ref<MentionSelection[]>([])
 const descriptionTextareaRef = ref<HTMLTextAreaElement | null>(null)
 const mentionPickerRef = ref<InstanceType<typeof MentionPicker> | null>(null)
 
@@ -77,18 +78,19 @@ async function createTask() {
       assignee_id?: string
       estimated_value?: number
     } = {
-      title: newTitle.value.trim(),
+      title: encodeMentionNamesToTokens(newTitle.value.trim(), newMentions.value),
       priority: newPriority.value,
     }
-    const description = newDescription.value.trim()
+    const description = encodeMentionNamesToTokens(newDescription.value.trim(), newMentions.value)
     if (description) payload.description = description
     if (newEstimatedValue.value != null) payload.estimated_value = newEstimatedValue.value
-    const assigneeId = extractMentionedAssigneeId(newTitle.value, newDescription.value)
+    const assigneeId = extractMentionedAssigneeId(payload.title, payload.description || '')
     if (assigneeId) payload.assignee_id = assigneeId
 
     await store.createTask(props.workspaceId, payload)
     newTitle.value = ''
     newDescription.value = ''
+    newMentions.value = []
     newPriority.value = 'medium'
     newEstimatedValue.value = null
     showCreate.value = false
@@ -206,6 +208,7 @@ defineExpose({ refresh: loadTasks })
         <MentionPicker
           ref="mentionPickerRef"
           v-model="newDescription"
+          v-model:mentions="newMentions"
           :textarea-el="descriptionTextareaRef"
         />
       </div>

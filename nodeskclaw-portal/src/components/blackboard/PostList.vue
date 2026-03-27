@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import api from '@/services/api'
 import MentionPicker from './MentionPicker.vue'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { replaceMentionTokens } from '@/utils/mentionText'
+import { encodeMentionNamesToTokens, replaceMentionTokens, type MentionSelection } from '@/utils/mentionText'
 
 const props = defineProps<{ workspaceId: string }>()
 const emit = defineEmits<{ (e: 'select', postId: string): void }>()
@@ -30,6 +30,7 @@ const loading = ref(false)
 const showCreate = ref(false)
 const newTitle = ref('')
 const newContent = ref('')
+const newMentions = ref<MentionSelection[]>([])
 const creating = ref(false)
 const contentTextareaRef = ref<HTMLTextAreaElement | null>(null)
 const mentionPickerRef = ref<InstanceType<typeof MentionPicker> | null>(null)
@@ -55,11 +56,12 @@ async function createPost() {
   try {
     await api.post(`/workspaces/${props.workspaceId}/blackboard/posts`, {
       title: newTitle.value.trim(),
-      content: newContent.value.trim(),
+      content: encodeMentionNamesToTokens(newContent.value.trim(), newMentions.value),
     })
     showCreate.value = false
     newTitle.value = ''
     newContent.value = ''
+    newMentions.value = []
     page.value = 1
     await fetchPosts()
   } catch (e) {
@@ -123,6 +125,7 @@ watch(() => props.workspaceId, fetchPosts)
         <MentionPicker
           ref="mentionPickerRef"
           v-model="newContent"
+          v-model:mentions="newMentions"
           :textarea-el="contentTextareaRef"
         />
       </div>
